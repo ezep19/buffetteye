@@ -1,0 +1,36 @@
+name: BuffettEye Scanner
+
+on:
+  # Cada 15 minutos en horario de rueda BYMA (14:00–20:00 UTC = 11:00–17:00 ARS)
+  # Lunes a Viernes solamente
+  schedule:
+    - cron: '0,15,30,45 14-19 * * 1-5'
+
+  # Permite disparar manualmente desde la pestaña Actions de GitHub
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar scanner
+        run: python run_once.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCAN_INTERVAL_MINUTES: 15
+          CCL_DISCOUNT_THRESHOLD: 2.0
