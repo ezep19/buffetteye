@@ -56,7 +56,7 @@ WATCHLIST: dict[str, dict] = {
     "V":     {"ratio": 1,   "name": "Visa Inc.",                  "sector": "Finance"},
     "MA":    {"ratio": 1,   "name": "Mastercard Inc.",            "sector": "Finance"},
     "PYPL":  {"ratio": 1,   "name": "PayPal Holdings Inc.",       "sector": "Finance"},
-    "SQ":    {"ratio": 1,   "name": "Block Inc. (Square)",        "sector": "Finance"},
+    "COIN":  {"ratio": 1,   "name": "Coinbase Global Inc.",         "sector": "Finance"},
     "GS":    {"ratio": 1,   "name": "Goldman Sachs Group",        "sector": "Finance"},
     "JPM":   {"ratio": 1,   "name": "JPMorgan Chase & Co.",       "sector": "Finance"},
     # ── E-commerce & Retail ───────────────────────────────────────────────────

@@ -48,93 +48,88 @@ def _rsi_label(rsi: float) -> str:
 
 
 def _score_bar(score: int, max_score: int = 10) -> str:
-    """Barra visual de progreso para el opportunity score."""
     filled = round((score / max_score) * 10)
     return "█" * filled + "░" * (10 - filled)
 
 
-def _format_price(value: Optional[float], prefix: str = "") -> str:
+def _format_price(value: Optional[float]) -> str:
     if value is None:
         return "—"
-    return f"{prefix}{value:,.2f}"
+    return f"{value:,.2f}"
 
 
-# ── Construcción del Mensaje ──────────────────────────────────────────────────
+def _h(text: str) -> str:
+    """Escapa caracteres especiales HTML: &, <, >"""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ── Construcción del Mensaje (HTML) ──────────────────────────────────────────
 
 def build_message(signal: dict, news: dict) -> str:
-    """
-    Construye el texto Markdown del mensaje de alerta.
-    signal: dict devuelto por scanner_tecnico.analyze_ticker()
-    news:   dict devuelto por internet_search.get_news_context()
-    """
-    ticker      = signal["ticker"]
-    name        = signal["name"]
-    score       = signal["opportunity_score"]
-    rsi         = signal["rsi"]
-    precio_usd  = signal["precio_usd"]
-    precio_ars  = signal.get("precio_ars")
-    fuente_ars  = signal.get("fuente_ars", "—")
-    tf          = signal.get("timeframe", "15m")
-    sector      = next(
-        (meta["sector"] for sym, meta in __import__("config").WATCHLIST.items() if sym == ticker),
-        ""
+    ticker     = signal["ticker"]
+    name       = signal["name"]
+    score      = signal["opportunity_score"]
+    rsi        = signal["rsi"]
+    precio_usd = signal["precio_usd"]
+    precio_ars = signal.get("precio_ars")
+    fuente_ars = signal.get("fuente_ars", "—")
+    tf         = signal.get("timeframe", "15m")
+    sector     = next(
+        (meta["sector"] for sym, meta in __import__("config").WATCHLIST.items() if sym == ticker), ""
     )
     sector_emoji = _SECTOR_EMOJI.get(sector, "📊")
+    now = datetime.now(ARGENTINA_TZ).strftime("%d/%m/%Y %H:%M ARS")
 
-    # ── Bloque CCL ────────────────────────────────────────────────────────────
+    # ── CCL ───────────────────────────────────────────────────────────────────
     ccl_block = ""
-    ccl_ind = signal.get("ccl_individual")
-    ccl_ref = signal.get("ccl_referencia")
+    ccl_ind  = signal.get("ccl_individual")
+    ccl_ref  = signal.get("ccl_referencia")
     discount = signal.get("discount_pct")
     if ccl_ind and discount is not None:
         trend = "🟢 Descuento" if discount > 0 else "🔴 Premio"
         ccl_block = (
-            f"\n*💱 CCL Individual:* `${_format_price(ccl_ind)}`\n"
-            f"*💱 CCL Mercado:*    `${_format_price(ccl_ref)}`\n"
-            f"*📉 Descuento:*      `{discount:+.2f}%` {trend}\n"
-            f"*⚠️ Precio ARS:*     `${_format_price(precio_ars, '$')}` _{fuente_ars}_"
+            f"\n💱 <b>CCL Individual:</b> <code>${_h(_format_price(ccl_ind))}</code>\n"
+            f"💱 <b>CCL Mercado:</b>    <code>${_h(_format_price(ccl_ref))}</code>\n"
+            f"📉 <b>Descuento:</b>      <code>{discount:+.2f}%</code> {trend}\n"
+            f"⚠️ <b>Precio ARS:</b>     <code>${_h(_format_price(precio_ars))}</code> <i>{_h(fuente_ars)}</i>"
         )
     elif precio_ars:
-        ccl_block = f"\n*💵 Precio ARS:* `${_format_price(precio_ars)}` _{fuente_ars}_"
+        ccl_block = f"\n💵 <b>Precio ARS:</b> <code>${_h(_format_price(precio_ars))}</code> <i>{_h(fuente_ars)}</i>"
 
-    # ── Bloque de señales ─────────────────────────────────────────────────────
+    # ── Señales activas ───────────────────────────────────────────────────────
     flags = []
     if signal.get("rsi_oversold"):         flags.append("RSI en descuento")
     if signal.get("precio_bajo_bb"):       flags.append("Precio bajo Banda Inferior BB")
     if signal.get("huella_institucional"): flags.append("🔔 Huella institucional detectada")
     if signal.get("precio_bajo_ema"):      flags.append("Precio bajo EMA 20")
     if signal.get("cotiza_con_descuento"): flags.append("CCL con descuento vs mercado")
-    flags_text = "\n".join(f"   ✅ {f}" for f in flags) if flags else "   _Sin señales adicionales_"
+    flags_text = "\n".join(f"   ✅ {f}" for f in flags) if flags else "   <i>Sin señales adicionales</i>"
 
     # ── Noticias ──────────────────────────────────────────────────────────────
-    news_text = news.get("summary", "_Sin titulares recientes_")
-    sources = ", ".join(news.get("sources_used", []))
-
-    # ── Timestamp ─────────────────────────────────────────────────────────────
-    now = datetime.now(ARGENTINA_TZ).strftime("%d/%m/%Y %H:%M ARS")
+    news_text = _h(news.get("summary", "")) or "<i>Sin titulares recientes</i>"
+    sources   = _h(", ".join(news.get("sources_used", [])))
 
     msg = (
-        f"🏛️👁️ *[BUFFETTEYE \\- ALERTA DE VALOR]*\n"
+        f"🏛️👁️ <b>[BUFFETTEYE - ALERTA DE VALOR]</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{sector_emoji} *{ticker}* — {name}\n"
-        f"⏱ Timeframe: `{tf}` | 🕐 `{now}`\n\n"
-        f"*📊 Score de Oportunidad:* `{score}/10`\n"
-        f"`{_score_bar(score)}`\n\n"
-        f"*📈 Datos de Precio*\n"
-        f"*💵 Precio USD:*   `${_format_price(precio_usd)}`\n"
+        f"{sector_emoji} <b>{_h(ticker)}</b> — {_h(name)}\n"
+        f"⏱ Timeframe: <code>{tf}</code> | 🕐 <code>{now}</code>\n\n"
+        f"📊 <b>Score de Oportunidad:</b> <code>{score}/10</code>\n"
+        f"<code>{_score_bar(score)}</code>\n\n"
+        f"📈 <b>Datos de Precio</b>\n"
+        f"💵 <b>Precio USD:</b> <code>${_h(_format_price(precio_usd))}</code>"
         f"{ccl_block}\n\n"
-        f"*🔬 Indicadores Técnicos*\n"
-        f"*RSI ({tf}):*   `{rsi}` — {_rsi_label(rsi)}\n"
-        f"*EMA 20:*   `{_format_price(signal.get('ema_20'), '$')}`\n"
-        f"*BB Inf:*   `{_format_price(signal.get('bb_lower'), '$')}`\n"
-        f"*%B:*       `{signal.get('bb_pct_b', '—')}`\n"
-        f"*Vol Spike:* `{'Sí 🚨' if signal.get('volumen_spike') else 'No'}`\n\n"
-        f"*⚡ Señales Activas*\n"
+        f"🔬 <b>Indicadores Técnicos</b>\n"
+        f"RSI ({tf}):   <code>{rsi}</code> — {_rsi_label(rsi)}\n"
+        f"EMA 20:   <code>${_h(_format_price(signal.get('ema_20')))}</code>\n"
+        f"BB Inf:   <code>${_h(_format_price(signal.get('bb_lower')))}</code>\n"
+        f"Vol Spike: <code>{'Si 🚨' if signal.get('volumen_spike') else 'No'}</code>\n\n"
+        f"⚡ <b>Señales Activas</b>\n"
         f"{flags_text}\n\n"
-        f"*📰 Contexto de Mercado* _{sources}_\n"
+        f"📰 <b>Contexto de Mercado</b> <i>{sources}</i>\n"
         f"{news_text}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"_BuffettEye v1\\.0 — Value Intelligence Engine_"
+        f"<i>BuffettEye v1.0 — Value Intelligence Engine</i>"
     )
     return msg
 
@@ -142,37 +137,26 @@ def build_message(signal: dict, news: dict) -> str:
 # ── Envío a Telegram ──────────────────────────────────────────────────────────
 
 def send_alert(signal: dict, news: dict) -> bool:
-    """
-    Envía una alerta a Telegram.
-    Retorna True si el mensaje fue enviado exitosamente, False si falló.
-    """
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.error("TELEGRAM_TOKEN o TELEGRAM_CHAT_ID no configurados en .env")
         return False
 
     message = build_message(signal, news)
     url = _TELEGRAM_API.format(token=TELEGRAM_TOKEN)
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "MarkdownV2",
+        "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
 
     try:
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code == 200:
-            logger.info(f"✅ Alerta enviada: {signal['ticker']} (score={signal['opportunity_score']})")
+            logger.info(f"Alerta enviada: {signal['ticker']} (score={signal['opportunity_score']})")
             return True
         else:
             logger.error(f"Telegram error {resp.status_code}: {resp.text[:200]}")
-            # Reintento sin Markdown si el parse falla (error 400)
-            if resp.status_code == 400:
-                payload["parse_mode"] = None
-                payload["text"] = _strip_markdown(message)
-                resp2 = requests.post(url, json=payload, timeout=10)
-                return resp2.status_code == 200
             return False
     except requests.RequestException as exc:
         logger.error(f"Error enviando alerta para {signal['ticker']}: {exc}")
