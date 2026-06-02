@@ -1,11 +1,12 @@
 """
-BuffettEye — Módulo de Búsqueda en Internet
-Obtiene titulares recientes para contextualizar picos de volumen o caídas.
-Fuentes: yfinance ticker.news → Google News RSS → Yahoo Finance RSS (fallback).
+BuffettEye — Módulo de Búsqueda de Noticias en Español
+Obtiene titulares recientes en español para contextualizar movimientos de precio.
+Fuentes: Google News AR (español) → Ambito Financiero → Yahoo Finance España → Yahoo Finance EN (fallback)
 """
 
 from __future__ import annotations
 
+import calendar
 import logging
 import re
 import time
@@ -14,72 +15,55 @@ from typing import Optional
 
 import feedparser
 import requests
-import yfinance as yf
 
 logger = logging.getLogger("buffetteye.internet")
 
-_MAX_HEADLINES = 5
-_MAX_AGE_HOURS = 2
+_MAX_HEADLINES = 4
+_MAX_AGE_HOURS_ES = 720  # noticias en español: ventana de 30 días
+_MAX_AGE_HOURS_EN = 24   # noticias en inglés: últimas 24h
 _REQUEST_TIMEOUT = 6
+_HEADERS = {"User-Agent": "Mozilla/5.0 BuffettEye/1.0"}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _clean_text(text: str) -> str:
-    """Elimina caracteres de control y espacios sobrantes."""
+def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _is_recent(pub_ts: Optional[int], max_hours: int = _MAX_AGE_HOURS) -> bool:
-    """True si el artículo fue publicado en las últimas max_hours horas."""
+def _ts_from_struct(entry) -> Optional[int]:
+    if hasattr(entry, "published_parsed") and entry.published_parsed:
+        return int(calendar.timegm(entry.published_parsed))
+    return None
+
+
+def _is_recent(pub_ts: Optional[int], max_hours: int = _MAX_AGE_HOURS_ES) -> bool:
     if pub_ts is None:
-        return True  # si no hay timestamp lo incluimos por defecto
-    age_hours = (time.time() - pub_ts) / 3600
-    return age_hours <= max_hours
+        return True
+    return (time.time() - pub_ts) / 3600 <= max_hours
 
 
-def _format_headline(title: str, source: str = "", pub_ts: Optional[int] = None) -> str:
-    """Formatea un titular para incluir en el mensaje Telegram."""
-    time_str = ""
-    if pub_ts:
-        dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
-        time_str = f" [{dt.strftime('%H:%M UTC')}]"
-    src = f" — _{source}_" if source else ""
-    return f"• {_clean_text(title)}{time_str}{src}"
+def _fmt_hora(pub_ts: Optional[int]) -> str:
+    if not pub_ts:
+        return ""
+    dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
+    age_h = (time.time() - pub_ts) / 3600
+    if age_h < 24:
+        return f" [hace {int(age_h)}h]"
+    else:
+        return f" [{dt.strftime('%d/%m/%Y')}]"
 
 
-# ── Fuente 1: yfinance ticker.news ───────────────────────────────────────────
+def _fmt_headline(title: str, source: str = "", pub_ts: Optional[int] = None) -> str:
+    return f"• {_clean(title)}{_fmt_hora(pub_ts)} — <i>{_clean(source)}</i>"
 
-def _fetch_yfinance_news(ticker: str) -> list[str]:
+
+# ── Fuente 1: Google News RSS en español (Argentina) ─────────────────────────
+
+def _google_news_es(query: str) -> list[str]:
     """
-    Obtiene noticias desde yfinance (Yahoo Finance bajo el capó).
-    Retorna lista de titulares formateados.
-    """
-    headlines = []
-    try:
-        t = yf.Ticker(ticker)
-        news_items = t.news or []
-        for item in news_items[:_MAX_HEADLINES * 2]:
-            pub_ts = item.get("providerPublishTime")
-            if not _is_recent(pub_ts):
-                continue
-            title = item.get("title", "")
-            publisher = item.get("publisher", "")
-            if title:
-                headlines.append(_format_headline(title, publisher, pub_ts))
-            if len(headlines) >= _MAX_HEADLINES:
-                break
-    except Exception as exc:
-        logger.debug(f"{ticker} yfinance news error: {exc}")
-    return headlines
-
-
-# ── Fuente 2: Google News RSS ────────────────────────────────────────────────
-
-def _fetch_google_news_rss(query: str) -> list[str]:
-    """
-    Scrape RSS de Google News (sin API key).
-    query: ej. 'AAPL Apple stock'
+    Google News RSS en español con localización argentina.
+    Ejemplo de query: 'Apple acciones caída bolsa'
     """
     headlines = []
     url = (
@@ -87,54 +71,110 @@ def _fetch_google_news_rss(query: str) -> list[str]:
         f"?q={requests.utils.quote(query)}&hl=es-419&gl=AR&ceid=AR:es"
     )
     try:
-        resp = requests.get(url, timeout=_REQUEST_TIMEOUT, headers={"User-Agent": "BuffettEye/1.0"})
+        resp = requests.get(url, timeout=_REQUEST_TIMEOUT, headers=_HEADERS)
         if resp.status_code != 200:
             return headlines
         feed = feedparser.parse(resp.text)
         for entry in feed.entries[:_MAX_HEADLINES * 2]:
             title = entry.get("title", "")
             source = entry.get("source", {}).get("title", "Google News")
-            # feedparser devuelve published_parsed como struct_time UTC
-            pub_ts = None
-            if hasattr(entry, "published_parsed") and entry.published_parsed:
-                import calendar
-                pub_ts = int(calendar.timegm(entry.published_parsed))
+            pub_ts = _ts_from_struct(entry)
             if not _is_recent(pub_ts):
                 continue
             if title:
-                headlines.append(_format_headline(title, source, pub_ts))
+                headlines.append(_fmt_headline(title, source, pub_ts))
             if len(headlines) >= _MAX_HEADLINES:
                 break
     except Exception as exc:
-        logger.debug(f"Google News RSS error para '{query}': {exc}")
+        logger.debug(f"Google News ES error: {exc}")
     return headlines
 
 
-# ── Fuente 3: Yahoo Finance RSS (fallback) ───────────────────────────────────
+# ── Fuente 2: Ambito Financiero RSS ──────────────────────────────────────────
 
-def _fetch_yahoo_finance_rss(ticker: str) -> list[str]:
-    """Feed RSS público de Yahoo Finance para un ticker."""
+def _ambito_rss(company_name: str) -> list[str]:
+    """
+    RSS de Ambito Financiero (mercados). Filtra por nombre de empresa.
+    """
     headlines = []
-    url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+    urls = [
+        "https://www.ambito.com/rss/pages/economia-y-finanzas.xml",
+        "https://www.ambito.com/rss/pages/mercados.xml",
+    ]
+    keywords = [w.lower() for w in company_name.split() if len(w) > 3]
+
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=_REQUEST_TIMEOUT, headers=_HEADERS)
+            if resp.status_code != 200:
+                continue
+            feed = feedparser.parse(resp.text)
+            for entry in feed.entries[:30]:
+                title = entry.get("title", "")
+                pub_ts = _ts_from_struct(entry)
+                if not _is_recent(pub_ts):
+                    continue
+                # Filtrar por empresa o mercados globales
+                title_lower = title.lower()
+                if any(kw in title_lower for kw in keywords) or \
+                   any(w in title_lower for w in ["wall street", "nasdaq", "s&p", "bolsa", "acciones", "mercado"]):
+                    headlines.append(_fmt_headline(title, "Ámbito Financiero", pub_ts))
+                if len(headlines) >= _MAX_HEADLINES:
+                    break
+        except Exception as exc:
+            logger.debug(f"Ambito RSS error: {exc}")
+        if headlines:
+            break
+    return headlines
+
+
+# ── Fuente 3: Yahoo Finance España RSS ───────────────────────────────────────
+
+def _yahoo_es_rss(ticker: str) -> list[str]:
+    """Yahoo Finance en español — noticias del ticker en castellano."""
+    headlines = []
+    url = f"https://es.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=ES&lang=es-ES"
     try:
-        resp = requests.get(url, timeout=_REQUEST_TIMEOUT, headers={"User-Agent": "BuffettEye/1.0"})
+        resp = requests.get(url, timeout=_REQUEST_TIMEOUT, headers=_HEADERS)
         if resp.status_code != 200:
             return headlines
         feed = feedparser.parse(resp.text)
         for entry in feed.entries[:_MAX_HEADLINES]:
             title = entry.get("title", "")
-            pub_ts = None
-            if hasattr(entry, "published_parsed") and entry.published_parsed:
-                import calendar
-                pub_ts = int(calendar.timegm(entry.published_parsed))
+            pub_ts = _ts_from_struct(entry)
             if not _is_recent(pub_ts):
                 continue
             if title:
-                headlines.append(_format_headline(title, "Yahoo Finance", pub_ts))
+                headlines.append(_fmt_headline(title, "Yahoo Finanzas", pub_ts))
             if len(headlines) >= _MAX_HEADLINES:
                 break
     except Exception as exc:
-        logger.debug(f"Yahoo Finance RSS error para {ticker}: {exc}")
+        logger.debug(f"Yahoo ES RSS error: {exc}")
+    return headlines
+
+
+# ── Fuente 4: Yahoo Finance EN (fallback traducido en texto) ─────────────────
+
+def _yahoo_en_rss(ticker: str) -> list[str]:
+    """Fallback en inglés si no hay noticias en español."""
+    headlines = []
+    url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+    try:
+        resp = requests.get(url, timeout=_REQUEST_TIMEOUT, headers=_HEADERS)
+        if resp.status_code != 200:
+            return headlines
+        feed = feedparser.parse(resp.text)
+        for entry in feed.entries[:_MAX_HEADLINES]:
+            title = entry.get("title", "")
+            pub_ts = _ts_from_struct(entry)
+            if not _is_recent(pub_ts, max_hours=_MAX_AGE_HOURS_EN):
+                continue
+            if title:
+                headlines.append(_fmt_headline(f"[EN] {title}", "Yahoo Finance", pub_ts))
+            if len(headlines) >= _MAX_HEADLINES:
+                break
+    except Exception as exc:
+        logger.debug(f"Yahoo EN RSS error: {exc}")
     return headlines
 
 
@@ -142,52 +182,47 @@ def _fetch_yahoo_finance_rss(ticker: str) -> list[str]:
 
 def get_news_context(ticker: str, company_name: str) -> dict:
     """
-    Obtiene titulares recientes para `ticker` usando todas las fuentes disponibles.
-    Retorna:
-      {
-        "headlines": [...],           # lista de strings formateados
-        "summary": str,               # resumen compacto para el mensaje
-        "sources_used": [...],        # qué fuentes respondieron
-        "headline_count": int,
-      }
+    Obtiene titulares recientes en español para `ticker`.
+    Prioridad: Google News AR → Ambito → Yahoo ES → Yahoo EN (fallback).
     """
     all_headlines: list[str] = []
     sources_used: list[str] = []
 
-    # — Fuente 1: yfinance —————————————————————————————————————————————————————
-    yf_headlines = _fetch_yfinance_news(ticker)
-    if yf_headlines:
-        all_headlines.extend(yf_headlines)
-        sources_used.append("Yahoo Finance")
+    def _add(new_items: list[str], source_label: str):
+        existing = {h[:50] for h in all_headlines}
+        for h in new_items:
+            if h[:50] not in existing:
+                all_headlines.append(h)
+                existing.add(h[:50])
+        if new_items:
+            sources_used.append(source_label)
 
-    # — Fuente 2: Google News RSS en español ──────────────────────────────────
-    if len(all_headlines) < 3:
-        query = f"{ticker} {company_name} acciones bolsa"
-        gn_headlines = _fetch_google_news_rss(query)
-        if gn_headlines:
-            # Deduplicar por primeras 40 chars del título
-            existing_prefixes = {h[:40] for h in all_headlines}
-            for h in gn_headlines:
-                if h[:40] not in existing_prefixes:
-                    all_headlines.append(h)
-                    existing_prefixes.add(h[:40])
-            if gn_headlines:
-                sources_used.append("Google News")
+    # 1. Google News en español
+    query_es = f"{company_name} acciones bolsa"
+    _add(_google_news_es(query_es), "Google News AR")
 
-    # — Fuente 3: Yahoo RSS (último fallback) ─────────────────────────────────
+    # 2. Google News con ticker
     if len(all_headlines) < 2:
-        yah_headlines = _fetch_yahoo_finance_rss(ticker)
-        if yah_headlines:
-            all_headlines.extend(yah_headlines)
-            if yah_headlines:
-                sources_used.append("Yahoo RSS")
+        _add(_google_news_es(f"{ticker} acciones"), "Google News")
+
+    # 3. Ambito Financiero
+    if len(all_headlines) < 2:
+        _add(_ambito_rss(company_name), "Ámbito Financiero")
+
+    # 4. Yahoo Finance España
+    if len(all_headlines) < 2:
+        _add(_yahoo_es_rss(ticker), "Yahoo Finanzas ES")
+
+    # 5. Yahoo Finance EN (fallback)
+    if len(all_headlines) < 1:
+        _add(_yahoo_en_rss(ticker), "Yahoo Finance")
 
     final = all_headlines[:_MAX_HEADLINES]
 
     if final:
         summary = "\n".join(final)
     else:
-        summary = "_No se encontraron titulares recientes (últimas 2h)_"
+        summary = "<i>Sin noticias recientes en las últimas horas.</i>"
 
     return {
         "headlines": final,
