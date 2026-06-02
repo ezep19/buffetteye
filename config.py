@@ -31,6 +31,10 @@ BB_STD = 2
 RSI_PERIOD = 14
 EMA_PERIOD = 20
 
+# ── Filtros de calidad ────────────────────────────────────────────────────────
+ALERT_MIN_SCORE = 6        # score mínimo para enviar alerta (0-10)
+ALERT_MAX_PER_CYCLE = 3    # máximo de alertas por ciclo de 15 minutos
+
 # ── Watchlist: 40 CEDEARs más líquidos de BYMA ───────────────────────────────
 # ratio: cantidad de CEDEARs necesarios para representar 1 acción subyacente
 # CCL_individual = (precio_ars × ratio) / precio_usd

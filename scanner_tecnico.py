@@ -16,6 +16,8 @@ import requests
 import yfinance as yf
 
 from config import (
+    ALERT_MAX_PER_CYCLE,
+    ALERT_MIN_SCORE,
     ARGENTINA_TZ,
     BB_PERIOD,
     BB_STD,
@@ -278,7 +280,7 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
         "ratio": ratio,
         # ── Score ─────────────────────────────────────────────────────────────
         "opportunity_score": score,
-        "alerta_activa": score >= 4,  # umbral mínimo para enviar alerta
+        "alerta_activa": score >= ALERT_MIN_SCORE,
     }
 
     return resultado
@@ -317,4 +319,4 @@ def scan_market(watchlist: dict | None = None, delay_between: float = 1.5) -> li
             time.sleep(delay_between)
 
     alertas.sort(key=lambda x: x["opportunity_score"], reverse=True)
-    return alertas
+    return alertas[:ALERT_MAX_PER_CYCLE]

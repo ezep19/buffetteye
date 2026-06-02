@@ -96,40 +96,45 @@ def build_message(signal: dict, news: dict) -> str:
     elif precio_ars:
         ccl_block = f"\n💵 <b>Precio ARS:</b> <code>${_h(_format_price(precio_ars))}</code> <i>{_h(fuente_ars)}</i>"
 
-    # ── Señales activas ───────────────────────────────────────────────────────
+    # ── Señales activas con explicación ──────────────────────────────────────
     flags = []
-    if signal.get("rsi_oversold"):         flags.append("RSI en descuento")
-    if signal.get("precio_bajo_bb"):       flags.append("Precio bajo Banda Inferior BB")
-    if signal.get("huella_institucional"): flags.append("🔔 Huella institucional detectada")
-    if signal.get("precio_bajo_ema"):      flags.append("Precio bajo EMA 20")
-    if signal.get("cotiza_con_descuento"): flags.append("CCL con descuento vs mercado")
-    flags_text = "\n".join(f"   ✅ {f}" for f in flags) if flags else "   <i>Sin señales adicionales</i>"
+    if signal.get("rsi_oversold"):
+        flags.append(f"RSI en <b>{rsi}</b> → El mercado vendió en exceso. Zona histórica de rebote.")
+    if signal.get("huella_institucional"):
+        flags.append("🔔 <b>Huella institucional</b> → Volumen anormal con precio en caída. Posible acumulación de grandes inversores.")
+    if signal.get("precio_bajo_bb"):
+        flags.append("Precio por debajo de la Banda Inferior de Bollinger → Estadísticamente el precio está en zona de reversión.")
+    if signal.get("precio_bajo_ema"):
+        flags.append("Precio por debajo de la EMA 20 → La tendencia de corto plazo favorece una recuperación.")
+    if signal.get("cotiza_con_descuento"):
+        flags.append(f"CCL con {signal.get('discount_pct', 0):+.1f}% de descuento vs el mercado → El CEDEAR cotiza más barato que su valor teórico.")
+    flags_text = "\n".join(f"  ✅ {f}" for f in flags) if flags else "  <i>Sin señales adicionales</i>"
 
     # ── Noticias ──────────────────────────────────────────────────────────────
     news_text = _h(news.get("summary", "")) or "<i>Sin titulares recientes</i>"
     sources   = _h(", ".join(news.get("sources_used", [])))
 
     msg = (
-        f"🏛️👁️ <b>[BUFFETTEYE - ALERTA DE VALOR]</b>\n"
+        f"🏛️👁️ <b>BUFFETTEYE — ALERTA DE VALOR</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{sector_emoji} <b>{_h(ticker)}</b> — {_h(name)}\n"
-        f"⏱ Timeframe: <code>{tf}</code> | 🕐 <code>{now}</code>\n\n"
-        f"📊 <b>Score de Oportunidad:</b> <code>{score}/10</code>\n"
+        f"📅 {now} | Timeframe: {tf}\n\n"
+        f"⭐ <b>SCORE DE OPORTUNIDAD: {score}/10</b>\n"
         f"<code>{_score_bar(score)}</code>\n\n"
-        f"📈 <b>Datos de Precio</b>\n"
-        f"💵 <b>Precio USD:</b> <code>${_h(_format_price(precio_usd))}</code>"
+        f"💵 <b>PRECIO:</b> <code>${_h(_format_price(precio_usd))} USD</code>"
         f"{ccl_block}\n\n"
-        f"🔬 <b>Indicadores Técnicos</b>\n"
-        f"RSI ({tf}):   <code>{rsi}</code> — {_rsi_label(rsi)}\n"
-        f"EMA 20:   <code>${_h(_format_price(signal.get('ema_20')))}</code>\n"
-        f"BB Inf:   <code>${_h(_format_price(signal.get('bb_lower')))}</code>\n"
-        f"Vol Spike: <code>{'Si 🚨' if signal.get('volumen_spike') else 'No'}</code>\n\n"
-        f"⚡ <b>Señales Activas</b>\n"
+        f"📊 <b>POR QUÉ ES UNA OPORTUNIDAD:</b>\n"
         f"{flags_text}\n\n"
-        f"📰 <b>Contexto de Mercado</b> <i>{sources}</i>\n"
-        f"{news_text}\n"
+        f"🔢 <b>DATOS TÉCNICOS:</b>\n"
+        f"  • RSI ({tf}): <code>{rsi}</code> → {_rsi_label(rsi)}\n"
+        f"  • EMA 20: <code>${_h(_format_price(signal.get('ema_20')))}</code> — referencia de tendencia\n"
+        f"  • Banda inferior BB: <code>${_h(_format_price(signal.get('bb_lower')))}</code>\n"
+        f"  • Volumen institucional: <code>{'Sí 🚨' if signal.get('volumen_spike') else 'No detectado'}</code>\n\n"
+        f"📰 <b>QUÉ ESTÁ PASANDO (últimas 2hs):</b>\n"
+        f"{news_text}\n\n"
+        f"⚠️ <i>Señal técnica, no recomendación de compra. Siempre verificá el contexto antes de operar.</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>BuffettEye v1.0 — Value Intelligence Engine</i>"
+        f"<i>BuffettEye v1.0</i>"
     )
     return msg
 

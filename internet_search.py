@@ -84,7 +84,7 @@ def _fetch_google_news_rss(query: str) -> list[str]:
     headlines = []
     url = (
         "https://news.google.com/rss/search"
-        f"?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en"
+        f"?q={requests.utils.quote(query)}&hl=es-419&gl=AR&ceid=AR:es"
     )
     try:
         resp = requests.get(url, timeout=_REQUEST_TIMEOUT, headers={"User-Agent": "BuffettEye/1.0"})
@@ -160,9 +160,9 @@ def get_news_context(ticker: str, company_name: str) -> dict:
         all_headlines.extend(yf_headlines)
         sources_used.append("Yahoo Finance")
 
-    # — Fuente 2: Google News RSS (si hace falta más contexto) ────────────────
+    # — Fuente 2: Google News RSS en español ──────────────────────────────────
     if len(all_headlines) < 3:
-        query = f"{ticker} {company_name} stock"
+        query = f"{ticker} {company_name} acciones bolsa"
         gn_headlines = _fetch_google_news_rss(query)
         if gn_headlines:
             # Deduplicar por primeras 40 chars del título
