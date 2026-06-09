@@ -66,19 +66,21 @@ def _h(text: str) -> str:
 # ── Construcción del Mensaje (HTML) ──────────────────────────────────────────
 
 def build_message(signal: dict, news: dict) -> str:
-    ticker     = signal["ticker"]
-    name       = signal["name"]
-    score      = signal["opportunity_score"]
-    rsi        = signal["rsi"]
-    precio_usd = signal["precio_usd"]
-    precio_ars = signal.get("precio_ars")
-    fuente_ars = signal.get("fuente_ars", "—")
-    tf         = signal.get("timeframe", "15m")
-    sector     = next(
+    ticker       = signal["ticker"]
+    name         = signal["name"]
+    score        = signal["opportunity_score"]
+    rsi          = signal["rsi"]
+    precio_usd   = signal["precio_usd"]
+    precio_ars   = signal.get("precio_ars")
+    fuente_ars   = signal.get("fuente_ars", "—")
+    tf           = signal.get("timeframe", "15m")
+    daily_change = signal.get("daily_change_pct")
+    sector       = next(
         (meta["sector"] for sym, meta in __import__("config").WATCHLIST.items() if sym == ticker), ""
     )
     sector_emoji = _SECTOR_EMOJI.get(sector, "📊")
     now = datetime.now(ARGENTINA_TZ).strftime("%d/%m/%Y %H:%M ARS")
+    caida_str = f" | 📉 <b>{daily_change:+.2f}% hoy</b>" if daily_change is not None else ""
 
     # ── CCL ───────────────────────────────────────────────────────────────────
     ccl_block = ""
@@ -98,16 +100,22 @@ def build_message(signal: dict, news: dict) -> str:
 
     # ── Señales activas con explicación ──────────────────────────────────────
     flags = []
-    if signal.get("rsi_oversold"):
-        flags.append(f"RSI en <b>{rsi}</b> → El mercado vendió en exceso. Zona histórica de rebote.")
-    if signal.get("huella_institucional"):
-        flags.append("🔔 <b>Huella institucional</b> → Volumen anormal con precio en caída. Posible acumulación de grandes inversores.")
+    if signal.get("rsi_extremo"):
+        flags.append(f"🔴 RSI en <b>{rsi}</b> → Sobreventa EXTREMA. Nivel históricamente escaso que suele preceder rebotes importantes.")
+    elif signal.get("rsi_oversold"):
+        flags.append(f"🟠 RSI en <b>{rsi}</b> → Sobreventa fuerte. El mercado vendió en exceso y el precio puede estar cerca de un piso.")
     if signal.get("precio_bajo_bb"):
-        flags.append("Precio por debajo de la Banda Inferior de Bollinger → Estadísticamente el precio está en zona de reversión.")
+        flags.append("📊 Precio perforó la Banda Inferior de Bollinger → Zona estadísticamente extrema. El 95% del tiempo el precio está por encima de este nivel.")
+    if daily_change is not None and daily_change <= -2.0:
+        flags.append(f"📉 Caída de <b>{daily_change:.2f}%</b> en el día → Venta masiva en la sesión actual.")
+    elif daily_change is not None and daily_change <= -1.0:
+        flags.append(f"📉 Baja de <b>{daily_change:.2f}%</b> en el día → Presión vendedora sostenida.")
+    if signal.get("huella_institucional"):
+        flags.append("🔔 <b>Huella institucional</b> → Volumen inusualmente alto en caída. Señal de posible acumulación por parte de grandes inversores.")
     if signal.get("precio_bajo_ema"):
-        flags.append("Precio por debajo de la EMA 20 → La tendencia de corto plazo favorece una recuperación.")
+        flags.append("📈 Precio por debajo de la EMA 20 → Tendencia de corto plazo extendida a la baja, candidata a recuperación.")
     if signal.get("cotiza_con_descuento"):
-        flags.append(f"CCL con {signal.get('discount_pct', 0):+.1f}% de descuento vs el mercado → El CEDEAR cotiza más barato que su valor teórico.")
+        flags.append(f"💱 CCL con <b>{signal.get('discount_pct', 0):+.1f}%</b> de descuento → El CEDEAR cotiza más barato que su valor implícito en dólares.")
     flags_text = "\n".join(f"  ✅ {f}" for f in flags) if flags else "  <i>Sin señales adicionales</i>"
 
     # ── Noticias ──────────────────────────────────────────────────────────────
@@ -118,7 +126,7 @@ def build_message(signal: dict, news: dict) -> str:
         f"🏛️👁️ <b>BUFFETTEYE — ALERTA DE VALOR</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{sector_emoji} <b>{_h(ticker)}</b> — {_h(name)}\n"
-        f"📅 {now} | Timeframe: {tf}\n\n"
+        f"📅 {now} | Timeframe: {tf}{caida_str}\n\n"
         f"⭐ <b>SCORE DE OPORTUNIDAD: {score}/10</b>\n"
         f"<code>{_score_bar(score)}</code>\n\n"
         f"💵 <b>PRECIO:</b> <code>${_h(_format_price(precio_usd))} USD</code>"

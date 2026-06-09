@@ -23,17 +23,33 @@ MARKET_OPEN = (11, 0)   # 11:00 ARS
 MARKET_CLOSE = (17, 0)  # 17:00 ARS
 
 # ── Umbrales técnicos ─────────────────────────────────────────────────────────
-RSI_OVERSOLD = 35               # RSI por debajo = zona de descuento
-RSI_OVERBOUGHT = 70
-VOLUME_SPIKE_MULTIPLIER = 1.80  # 80% por encima de la media de 20 velas
+RSI_OVERSOLD     = 30       # Umbral duro: RSI debe estar DEBAJO de esto para calificar
+RSI_EXTREME      = 25       # RSI extremo (señal más fuerte)
+RSI_OVERBOUGHT   = 70
+VOLUME_SPIKE_MULTIPLIER = 1.80
 BB_PERIOD = 20
-BB_STD = 2
+BB_STD    = 2
 RSI_PERIOD = 14
 EMA_PERIOD = 20
 
-# ── Filtros de calidad ────────────────────────────────────────────────────────
-ALERT_MIN_SCORE = 6        # score mínimo para enviar alerta (0-10)
-ALERT_MAX_PER_CYCLE = 3    # máximo de alertas por ciclo de 15 minutos
+# ── Filtros duros (TODOS deben cumplirse para que una acción califique) ───────
+# 1. RSI < RSI_OVERSOLD (30)
+# 2. Precio por debajo de la Banda Inferior de Bollinger
+# 3. Caída en el día >= MIN_DAILY_DROP_PCT
+MIN_DAILY_DROP_PCT = -1.0   # la acción debe haber caído al menos 1% hoy
+
+# ── Puntaje adicional (sobre los filtros duros) ───────────────────────────────
+# RSI < 25:              +4 pts
+# RSI 25–30:             +3 pts
+# Volumen institucional: +3 pts
+# Caída > 2% en el día:  +2 pts
+# Caída > 1% en el día:  +1 pt
+# Precio bajo EMA 20:    +1 pt
+# CCL con descuento:     +1 pt
+
+# ── Filtros de despacho ───────────────────────────────────────────────────────
+ALERT_MIN_SCORE    = 5     # score mínimo DESPUÉS de pasar los filtros duros
+ALERT_MAX_PER_CYCLE = 2    # máximo 2 alertas por ciclo (las mejores del mercado)
 
 # ── Watchlist: 40 CEDEARs más líquidos de BYMA ───────────────────────────────
 # ratio: cantidad de CEDEARs necesarios para representar 1 acción subyacente

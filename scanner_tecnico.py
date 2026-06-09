@@ -23,6 +23,8 @@ from config import (
     BB_STD,
     CCL_DISCOUNT_THRESHOLD,
     EMA_PERIOD,
+    MIN_DAILY_DROP_PCT,
+    RSI_EXTREME,
     RSI_OVERSOLD,
     RSI_PERIOD,
     VOLUME_SPIKE_MULTIPLIER,
@@ -106,6 +108,24 @@ def get_current_price_usd(ticker: str) -> Optional[float]:
         return float(info.last_price)
     except Exception:
         return None
+
+
+# ── Variación Diaria ─────────────────────────────────────────────────────────
+
+def get_daily_change_pct(ticker: str) -> Optional[float]:
+    """
+    Retorna la variación porcentual del precio en el día actual.
+    Positivo = subió, negativo = bajó.
+    """
+    try:
+        info = yf.Ticker(ticker).fast_info
+        prev_close = float(info.previous_close)
+        last = float(info.last_price)
+        if prev_close and prev_close > 0:
+            return round((last - prev_close) / prev_close * 100, 2)
+    except Exception:
+        pass
+    return None
 
 
 # ── Dólar CCL de Referencia ───────────────────────────────────────────────────
@@ -232,28 +252,55 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
     last_bb_pct_b  = float(bb["bb_pct_b"].iloc[-1])
     last_vol_spike = bool(vol_spike.iloc[-1])
 
-    # ─ Señales técnicas ───────────────────────────────────────────────────────
-    rsi_en_descuento   = last_rsi < RSI_OVERSOLD
-    precio_bajo_bb     = last_close < last_bb_lower
-    huella_institucional = last_vol_spike and rsi_en_descuento  # filtro clave
-    precio_bajo_ema    = last_close < last_ema
+    # ─ Indicadores binarios ───────────────────────────────────────────────────
+    rsi_oversold        = last_rsi < RSI_OVERSOLD          # RSI < 30
+    rsi_extremo         = last_rsi < RSI_EXTREME           # RSI < 25
+    precio_bajo_bb      = last_close < last_bb_lower
+    precio_bajo_ema     = last_close < last_ema
+    huella_institucional = last_vol_spike and rsi_oversold
 
-    # ─ CCL ────────────────────────────────────────────────────────────────────
-    usd_price = get_current_price_usd(ticker) or last_close
-    ccl_ref   = get_ccl_reference()
+    # ─ Caída diaria del precio ────────────────────────────────────────────────
+    usd_price   = get_current_price_usd(ticker) or last_close
+    daily_change = get_daily_change_pct(ticker)  # ej: -2.5 = bajó 2.5% hoy
+
+    # ─ FILTROS DUROS: los 3 deben cumplirse para que la acción califique ──────
+    # 1. RSI realmente oversold (< 30)
+    # 2. Precio perforó la Banda Inferior de Bollinger
+    # 3. La acción cayó al menos MIN_DAILY_DROP_PCT% hoy
+    daily_ok = (daily_change is not None and daily_change <= MIN_DAILY_DROP_PCT)
+    filtros_duros = rsi_oversold and precio_bajo_bb and daily_ok
+
+    if not filtros_duros:
+        # No califica — retornamos sin alerta para no desperdiciar tiempo en CCL/noticias
+        return {
+            "ticker": ticker, "name": name, "timeframe": tf_label,
+            "timestamp": datetime.now(ARGENTINA_TZ).isoformat(),
+            "precio_usd": round(usd_price, 4), "precio_ars": None, "fuente_ars": "—",
+            "rsi": round(last_rsi, 1), "ema_20": round(last_ema, 4),
+            "bb_lower": round(last_bb_lower, 4), "bb_pct_b": round(last_bb_pct_b, 3),
+            "volumen_spike": last_vol_spike, "daily_change_pct": daily_change,
+            "rsi_oversold": rsi_oversold, "precio_bajo_bb": precio_bajo_bb,
+            "precio_bajo_ema": precio_bajo_ema, "huella_institucional": huella_institucional,
+            "ratio": ratio, "opportunity_score": 0, "alerta_activa": False,
+        }
+
+    # ─ CCL (solo si pasa filtros duros) ──────────────────────────────────────
+    ccl_ref = get_ccl_reference()
     cedear_ars, fuente_ars = get_cedear_price_ars(ticker, usd_price, ratio, ccl_ref)
-
     ccl_data = {}
     if cedear_ars and ccl_ref:
         ccl_data = calculate_ccl_discount(cedear_ars, ratio, usd_price, ccl_ref)
 
-    # ─ Score de oportunidad (0-10) ────────────────────────────────────────────
+    # ─ Score de calidad (sobre la base de los filtros duros ya aprobados) ─────
     score = 0
-    if rsi_en_descuento:                        score += 3
-    if precio_bajo_bb:                          score += 2
-    if huella_institucional:                    score += 3
-    if precio_bajo_ema:                         score += 1
-    if ccl_data.get("cotiza_con_descuento"):    score += 1
+    if rsi_extremo:                              score += 4   # RSI < 25
+    elif rsi_oversold:                           score += 3   # RSI 25-30
+    if huella_institucional:                     score += 3   # vol spike + RSI bajo
+    if daily_change is not None:
+        if daily_change <= -2.0:                 score += 2   # caída fuerte hoy
+        elif daily_change <= -1.0:               score += 1   # caída moderada hoy
+    if precio_bajo_ema:                          score += 1
+    if ccl_data.get("cotiza_con_descuento"):     score += 1
 
     resultado = {
         "ticker": ticker,
@@ -264,6 +311,7 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
         "precio_usd": round(usd_price, 4),
         "precio_ars": round(cedear_ars, 2) if cedear_ars else None,
         "fuente_ars": fuente_ars,
+        "daily_change_pct": daily_change,
         # ── Indicadores ───────────────────────────────────────────────────────
         "rsi": round(last_rsi, 1),
         "ema_20": round(last_ema, 4),
@@ -271,7 +319,8 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
         "bb_pct_b": round(last_bb_pct_b, 3),
         "volumen_spike": last_vol_spike,
         # ── Señales binarias ──────────────────────────────────────────────────
-        "rsi_oversold": rsi_en_descuento,
+        "rsi_oversold": rsi_oversold,
+        "rsi_extremo": rsi_extremo,
         "precio_bajo_bb": precio_bajo_bb,
         "precio_bajo_ema": precio_bajo_ema,
         "huella_institucional": huella_institucional,
