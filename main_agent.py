@@ -16,10 +16,12 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config import (
     ARGENTINA_TZ,
+    CRYPTO_ENABLED,
+    CRYPTO_WATCHLIST,
     MARKET_CLOSE,
     MARKET_OPEN,
     SCAN_INTERVAL_MINUTES,
@@ -87,8 +89,11 @@ def _minutes_until_open() -> int:
     open_h, open_m = MARKET_OPEN
     target = now.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
     # Si ya pasó la apertura hoy, apuntamos al próximo día hábil
+    # (timedelta y no replace(day=...): el día 31 rompía con ValueError)
     if now >= target:
-        target = target.replace(day=target.day + 1)
+        target += timedelta(days=1)
+    while target.weekday() >= 5:  # saltear sábado y domingo
+        target += timedelta(days=1)
     delta = (target - now).total_seconds() / 60
     return max(0, int(delta))
 
@@ -99,15 +104,25 @@ def _today_str() -> str:
 
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 
-def run_scan_cycle() -> None:
-    """Ejecuta un ciclo completo de escaneo y despacho de alertas."""
+def run_scan_cycle(incluir_cedears: bool = True) -> None:
+    """
+    Ejecuta un ciclo completo de escaneo y despacho de alertas.
+
+    incluir_cedears: False fuera del horario de rueda BYMA — ahí solo tiene
+    sentido escanear cripto, que cotiza 24/7.
+    """
     global _scan_count, _alerts_sent
 
     _scan_count += 1
-    logger.info(f"═══ Ciclo #{_scan_count} iniciado ═══")
+    alcance = "CEDEARs + cripto" if incluir_cedears else "solo cripto"
+    logger.info(f"═══ Ciclo #{_scan_count} iniciado ({alcance}) ═══")
 
-    # 1. Escaneo técnico de todo el watchlist
-    signals = scan_market(watchlist=WATCHLIST)
+    # 1. Escaneo técnico de los watchlists habilitados
+    signals: list[dict] = []
+    if incluir_cedears:
+        signals += scan_market(watchlist=WATCHLIST)
+    if CRYPTO_ENABLED:
+        signals += scan_market(watchlist=CRYPTO_WATCHLIST)
     logger.info(f"Ciclo #{_scan_count}: {len(signals)} señal(es) con alerta activa")
 
     # 2. Procesar cada señal
@@ -126,7 +141,9 @@ def run_scan_cycle() -> None:
         if signal_data.get("volumen_spike") or signal_data.get("rsi_oversold"):
             logger.info(f"{ticker}: buscando contexto de noticias...")
             name = signal_data.get("name", ticker)
-            news_data = get_news_context(ticker, name)
+            news_data = get_news_context(
+                ticker, name, asset_class=signal_data.get("asset_class", "cedear")
+            )
 
         # Envío de alerta
         sent = send_alert(signal_data, news_data)
@@ -149,7 +166,11 @@ def main() -> None:
     logger.info("=" * 42)
     logger.info("   BuffettEye v1.0 - Iniciando...")
     logger.info("=" * 42)
-    logger.info(f"Watchlist: {len(WATCHLIST)} CEDEARs | Intervalo: {SCAN_INTERVAL_MINUTES}m")
+    cripto_txt = f" + {len(CRYPTO_WATCHLIST)} cripto 24/7" if CRYPTO_ENABLED else ""
+    logger.info(
+        f"Watchlist: {len(WATCHLIST)} CEDEARs{cripto_txt} | "
+        f"Intervalo: {SCAN_INTERVAL_MINUTES}m"
+    )
 
     send_startup_message()
 
@@ -163,19 +184,29 @@ def main() -> None:
             _alerted_today.clear()
             current_day = new_day
 
-        if _is_market_open():
+        rueda_abierta = _is_market_open()
+
+        # Escaneamos si la rueda está abierta (CEDEARs + cripto) o si hay cripto
+        # habilitada (que cotiza 24/7, fines de semana y feriados incluidos).
+        if rueda_abierta or CRYPTO_ENABLED:
+            if not rueda_abierta:
+                mins_left = _minutes_until_open()
+                now_str = datetime.now(ARGENTINA_TZ).strftime("%H:%M ARS")
+                logger.info(
+                    f"[{now_str}] Rueda BYMA cerrada (reapertura en ~{mins_left}m) — "
+                    f"escaneando solo cripto."
+                )
             try:
-                run_scan_cycle()
+                run_scan_cycle(incluir_cedears=rueda_abierta)
             except Exception as exc:
                 logger.exception(f"Error inesperado en ciclo de escaneo: {exc}")
 
             # Esperar hasta el próximo ciclo
-            sleep_secs = SCAN_INTERVAL_MINUTES * 60
             logger.info(f"Próximo escaneo en {SCAN_INTERVAL_MINUTES} minutos...")
-            _interruptible_sleep(sleep_secs)
+            _interruptible_sleep(SCAN_INTERVAL_MINUTES * 60)
 
         else:
-            # Mercado cerrado — esperar con polling cada 5 minutos
+            # Rueda cerrada y cripto deshabilitada — polling cada 5 minutos
             mins_left = _minutes_until_open()
             now_str = datetime.now(ARGENTINA_TZ).strftime("%H:%M ARS")
             logger.info(

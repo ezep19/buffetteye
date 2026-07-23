@@ -11,7 +11,7 @@ from typing import Optional
 
 import requests
 
-from config import ARGENTINA_TZ, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+from config import ALL_ASSETS, ARGENTINA_TZ, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 
 logger = logging.getLogger("buffetteye.alerts")
 
@@ -29,6 +29,10 @@ _SECTOR_EMOJI = {
     "Industrial": "⚙️",
     "Auto":       "🚗",
     "SaaS":       "☁️",
+    # ── Cripto ────────────────────────────────────────────────────────────────
+    "Crypto-L1":    "⛓️",
+    "Crypto-Pagos": "💸",
+    "Crypto-DeFi":  "🔗",
 }
 
 _RSI_LABEL = {
@@ -48,13 +52,26 @@ def _rsi_label(rsi: float) -> str:
 
 
 def _score_bar(score: int, max_score: int = 10) -> str:
-    filled = round((score / max_score) * 10)
+    filled = max(0, min(10, round((score / max_score) * 10)))
     return "█" * filled + "░" * (10 - filled)
 
 
 def _format_price(value: Optional[float]) -> str:
+    """
+    Formatea un precio con decimales adaptativos.
+    Necesario para cripto: DOGE a 0.073 se vería como '0.07' con 2 decimales fijos.
+    """
     if value is None:
         return "—"
+    abs_v = abs(value)
+    if abs_v == 0:
+        return "0.00"
+    if abs_v < 0.01:
+        return f"{value:,.6f}"
+    if abs_v < 1:
+        return f"{value:,.4f}"
+    if abs_v < 100:
+        return f"{value:,.3f}".rstrip("0").rstrip(".")
     return f"{value:,.2f}"
 
 
@@ -75,12 +92,16 @@ def build_message(signal: dict, news: dict) -> str:
     fuente_ars   = signal.get("fuente_ars", "—")
     tf           = signal.get("timeframe", "15m")
     daily_change = signal.get("daily_change_pct")
-    sector       = next(
-        (meta["sector"] for sym, meta in __import__("config").WATCHLIST.items() if sym == ticker), ""
-    )
+    is_crypto    = signal.get("asset_class") == "crypto"
+    sector       = ALL_ASSETS.get(ticker, {}).get("sector", "")
     sector_emoji = _SECTOR_EMOJI.get(sector, "📊")
     now = datetime.now(ARGENTINA_TZ).strftime("%d/%m/%Y %H:%M ARS")
     caida_str = f" | 📉 <b>{daily_change:+.2f}% hoy</b>" if daily_change is not None else ""
+
+    # En cripto el ticker de yfinance viene como 'BTC-USD' — mostramos solo 'BTC'.
+    ticker_label = ticker.replace("-USD", "") if is_crypto else ticker
+    titulo   = "ALERTA CRIPTO" if is_crypto else "ALERTA DE VALOR"
+    mercado  = "Mercado 24/7" if is_crypto else "BYMA"
 
     # ── CCL ───────────────────────────────────────────────────────────────────
     ccl_block = ""
@@ -106,12 +127,26 @@ def build_message(signal: dict, news: dict) -> str:
         flags.append(f"🟠 RSI en <b>{rsi}</b> → Sobreventa fuerte. El mercado vendió en exceso y el precio puede estar cerca de un piso.")
     if signal.get("precio_bajo_bb"):
         flags.append("📊 Precio perforó la Banda Inferior de Bollinger → Zona estadísticamente extrema. El 95% del tiempo el precio está por encima de este nivel.")
-    if daily_change is not None and daily_change <= -2.0:
-        flags.append(f"📉 Caída de <b>{daily_change:.2f}%</b> en el día → Venta masiva en la sesión actual.")
-    elif daily_change is not None and daily_change <= -1.0:
-        flags.append(f"📉 Baja de <b>{daily_change:.2f}%</b> en el día → Presión vendedora sostenida.")
+    # Los tramos de caída difieren: en cripto un -2% es ruido intradiario.
+    if is_crypto:
+        if signal.get("capitulacion"):
+            flags.append(f"🩸 Capitulación: <b>{daily_change:.2f}%</b> en el día → Pánico vendedor. Históricamente donde se forman los pisos, y también donde más se pierde si el ciclo sigue bajando.")
+        elif daily_change is not None and daily_change <= -8.0:
+            flags.append(f"📉 Derrumbe de <b>{daily_change:.2f}%</b> en el día → Liquidaciones en cadena, típicas de mercados apalancados.")
+        elif daily_change is not None and daily_change <= -4.0:
+            flags.append(f"📉 Caída de <b>{daily_change:.2f}%</b> en el día → Presión vendedora fuerte en las últimas 24hs.")
+    else:
+        if daily_change is not None and daily_change <= -2.0:
+            flags.append(f"📉 Caída de <b>{daily_change:.2f}%</b> en el día → Venta masiva en la sesión actual.")
+        elif daily_change is not None and daily_change <= -1.0:
+            flags.append(f"📉 Baja de <b>{daily_change:.2f}%</b> en el día → Presión vendedora sostenida.")
     if signal.get("huella_institucional"):
-        flags.append("🔔 <b>Huella institucional</b> → Volumen inusualmente alto en caída. Señal de posible acumulación por parte de grandes inversores.")
+        detalle = (
+            "Volumen inusualmente alto en caída. Puede ser acumulación de ballenas, pero también liquidación forzada de posiciones apalancadas."
+            if is_crypto else
+            "Volumen inusualmente alto en caída. Señal de posible acumulación por parte de grandes inversores."
+        )
+        flags.append(f"🔔 <b>Huella institucional</b> → {detalle}")
     if signal.get("precio_bajo_ema"):
         flags.append("📈 Precio por debajo de la EMA 20 → Tendencia de corto plazo extendida a la baja, candidata a recuperación.")
     if signal.get("cotiza_con_descuento"):
@@ -122,11 +157,19 @@ def build_message(signal: dict, news: dict) -> str:
     news_text = _h(news.get("summary", "")) or "<i>Sin titulares recientes</i>"
     sources   = _h(", ".join(news.get("sources_used", [])))
 
+    disclaimer = (
+        "⚠️ <i>Señal técnica, no recomendación de compra. La cripto no tiene balances ni "
+        "flujo de caja que sostengan una valuación: puede seguir cayendo sin piso técnico. "
+        "Nunca pongas plata que no puedas perder.</i>"
+        if is_crypto else
+        "⚠️ <i>Señal técnica, no recomendación de compra. Siempre verificá el contexto antes de operar.</i>"
+    )
+
     msg = (
-        f"🏛️👁️ <b>BUFFETTEYE — ALERTA DE VALOR</b>\n"
+        f"🏛️👁️ <b>BUFFETTEYE — {titulo}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{sector_emoji} <b>{_h(ticker)}</b> — {_h(name)}\n"
-        f"📅 {now} | Timeframe: {tf}{caida_str}\n\n"
+        f"{sector_emoji} <b>{_h(ticker_label)}</b> — {_h(name)}\n"
+        f"📅 {now} | {mercado} | Timeframe: {tf}{caida_str}\n\n"
         f"⭐ <b>SCORE DE OPORTUNIDAD: {score}/10</b>\n"
         f"<code>{_score_bar(score)}</code>\n\n"
         f"💵 <b>PRECIO:</b> <code>${_h(_format_price(precio_usd))} USD</code>"
@@ -138,11 +181,11 @@ def build_message(signal: dict, news: dict) -> str:
         f"  • EMA 20: <code>${_h(_format_price(signal.get('ema_20')))}</code> — referencia de tendencia\n"
         f"  • Banda inferior BB: <code>${_h(_format_price(signal.get('bb_lower')))}</code>\n"
         f"  • Volumen institucional: <code>{'Sí 🚨' if signal.get('volumen_spike') else 'No detectado'}</code>\n\n"
-        f"📰 <b>QUÉ ESTÁ PASANDO (últimas 2hs):</b>\n"
+        f"📰 <b>QUÉ ESTÁ PASANDO:</b>\n"
         f"{news_text}\n\n"
-        f"⚠️ <i>Señal técnica, no recomendación de compra. Siempre verificá el contexto antes de operar.</i>\n"
+        f"{disclaimer}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>BuffettEye v1.0</i>"
+        f"<i>BuffettEye v1.1</i>"
     )
     return msg
 
@@ -203,11 +246,17 @@ def send_startup_message() -> None:
     """Notifica el inicio del agente."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
+    from config import CRYPTO_ENABLED, CRYPTO_WATCHLIST, WATCHLIST
+
     now = datetime.now(ARGENTINA_TZ).strftime("%d/%m/%Y %H:%M ARS")
+    cripto_line = (
+        f"₿ {len(CRYPTO_WATCHLIST)} criptomonedas 24/7\n" if CRYPTO_ENABLED else ""
+    )
     msg = (
         f"🟢 BuffettEye iniciado\n"
         f"🕐 {now}\n"
-        f"👁 Escaneando 40 CEDEARs BYMA...\n"
+        f"👁 {len(WATCHLIST)} CEDEARs BYMA (11:00-17:00 ARS)\n"
+        f"{cripto_line}"
         f"📡 Alertas activas"
     )
     url = _TELEGRAM_API.format(token=TELEGRAM_TOKEN)

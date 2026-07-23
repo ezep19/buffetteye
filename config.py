@@ -51,6 +51,39 @@ MIN_DAILY_DROP_PCT = -1.0   # la acción debe haber caído al menos 1% hoy
 ALERT_MIN_SCORE    = 5     # score mínimo DESPUÉS de pasar los filtros duros
 ALERT_MAX_PER_CYCLE = 2    # máximo 2 alertas por ciclo (las mejores del mercado)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CRIPTOMONEDAS
+# ══════════════════════════════════════════════════════════════════════════════
+# Las cripto son mucho más volátiles que los CEDEARs: una caída del 1% es ruido.
+# Por eso usan umbrales propios, más exigentes, y no tienen CCL (no hay ratio ni
+# precio en ARS de referencia — cotizan en USD 24/7).
+
+CRYPTO_ENABLED = os.getenv("CRYPTO_ENABLED", "true").lower() == "true"
+
+# ── Umbrales técnicos cripto ──────────────────────────────────────────────────
+CRYPTO_RSI_OVERSOLD = 30    # mismo umbral duro de sobreventa
+CRYPTO_RSI_EXTREME  = 22    # cripto llega más abajo que las acciones
+CRYPTO_VOLUME_SPIKE_MULTIPLIER = 2.20   # el volumen cripto es más ruidoso
+
+# ── Filtros duros cripto (los 3 deben cumplirse) ──────────────────────────────
+# 1. RSI < CRYPTO_RSI_OVERSOLD (30)
+# 2. Precio por debajo de la Banda Inferior de Bollinger
+# 3. Caída en el día >= CRYPTO_MIN_DAILY_DROP_PCT
+CRYPTO_MIN_DAILY_DROP_PCT    = -4.0    # debe haber caído al menos 4% hoy
+CRYPTO_CAPITULATION_DROP_PCT = -12.0   # caída de pánico → punto extra
+
+# ── Puntaje cripto (máximo 10, igual que CEDEARs) ─────────────────────────────
+# RSI < 22:               +4 pts
+# RSI 22–30:              +3 pts
+# Volumen institucional:  +3 pts
+# Caída > 8% en el día:   +2 pts
+# Caída > 4% en el día:   +1 pt
+# Precio bajo EMA 20:     +1 pt
+# Capitulación (> 12%):   +1 pt   (reemplaza el punto de CCL de los CEDEARs)
+
+CRYPTO_ALERT_MIN_SCORE     = 5
+CRYPTO_ALERT_MAX_PER_CYCLE = 1   # como máximo 1 alerta cripto por ciclo
+
 # ── Watchlist: 40 CEDEARs más líquidos de BYMA ───────────────────────────────
 # ratio: cantidad de CEDEARs necesarios para representar 1 acción subyacente
 # CCL_individual = (precio_ars × ratio) / precio_usd
@@ -107,3 +140,37 @@ WATCHLIST: dict[str, dict] = {
     # ── Videoconferencia / SaaS ───────────────────────────────────────────────
     "ZM":    {"ratio": 1,   "name": "Zoom Video Communications",  "sector": "SaaS"},
 }
+
+# ── Watchlist cripto: 15 monedas líquidas ────────────────────────────────────
+# Tickers en formato yfinance (SÍMBOLO-USD). Cotizan 24/7, sin ratio ni CCL.
+# Todas verificadas con datos OHLCV de 15m disponibles en yfinance.
+CRYPTO_WATCHLIST: dict[str, dict] = {
+    # ── Layer 1 mayores ───────────────────────────────────────────────────────
+    "BTC-USD":  {"name": "Bitcoin",     "sector": "Crypto-L1", "asset_class": "crypto"},
+    "ETH-USD":  {"name": "Ethereum",    "sector": "Crypto-L1", "asset_class": "crypto"},
+    "SOL-USD":  {"name": "Solana",      "sector": "Crypto-L1", "asset_class": "crypto"},
+    "BNB-USD":  {"name": "BNB",         "sector": "Crypto-L1", "asset_class": "crypto"},
+    "ADA-USD":  {"name": "Cardano",     "sector": "Crypto-L1", "asset_class": "crypto"},
+    "AVAX-USD": {"name": "Avalanche",   "sector": "Crypto-L1", "asset_class": "crypto"},
+    "DOT-USD":  {"name": "Polkadot",    "sector": "Crypto-L1", "asset_class": "crypto"},
+    "ATOM-USD": {"name": "Cosmos",      "sector": "Crypto-L1", "asset_class": "crypto"},
+    "NEAR-USD": {"name": "NEAR Protocol", "sector": "Crypto-L1", "asset_class": "crypto"},
+    "TRX-USD":  {"name": "TRON",        "sector": "Crypto-L1", "asset_class": "crypto"},
+    # ── Pagos & reserva de valor ──────────────────────────────────────────────
+    "XRP-USD":  {"name": "XRP",         "sector": "Crypto-Pagos", "asset_class": "crypto"},
+    "LTC-USD":  {"name": "Litecoin",    "sector": "Crypto-Pagos", "asset_class": "crypto"},
+    "DOGE-USD": {"name": "Dogecoin",    "sector": "Crypto-Pagos", "asset_class": "crypto"},
+    # ── DeFi & Oráculos ───────────────────────────────────────────────────────
+    "LINK-USD": {"name": "Chainlink",   "sector": "Crypto-DeFi", "asset_class": "crypto"},
+    "AAVE-USD": {"name": "Aave",        "sector": "Crypto-DeFi", "asset_class": "crypto"},
+}
+
+# ── Índice combinado ─────────────────────────────────────────────────────────
+# Usado para resolver metadatos (sector, nombre) desde cualquier módulo sin
+# tener que saber a qué watchlist pertenece el ticker.
+ALL_ASSETS: dict[str, dict] = {**WATCHLIST, **CRYPTO_WATCHLIST}
+
+
+def asset_class_of(ticker: str) -> str:
+    """'crypto' o 'cedear' según la watchlist en la que esté el ticker."""
+    return ALL_ASSETS.get(ticker, {}).get("asset_class", "cedear")

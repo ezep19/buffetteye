@@ -22,6 +22,13 @@ from config import (
     BB_PERIOD,
     BB_STD,
     CCL_DISCOUNT_THRESHOLD,
+    CRYPTO_ALERT_MAX_PER_CYCLE,
+    CRYPTO_ALERT_MIN_SCORE,
+    CRYPTO_CAPITULATION_DROP_PCT,
+    CRYPTO_MIN_DAILY_DROP_PCT,
+    CRYPTO_RSI_EXTREME,
+    CRYPTO_RSI_OVERSOLD,
+    CRYPTO_VOLUME_SPIKE_MULTIPLIER,
     EMA_PERIOD,
     MIN_DAILY_DROP_PCT,
     RSI_EXTREME,
@@ -219,11 +226,24 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
     Ejecuta el pipeline completo de análisis para un ticker:
       - Descarga OHLCV en 15m y 1h
       - Calcula Bollinger, RSI, EMA, volumen institucional
-      - Calcula CCL individual y descuento
+      - Calcula CCL individual y descuento (solo CEDEARs)
       - Retorna un dict con señales o None si no hay suficientes datos.
+
+    Soporta dos clases de activo, según meta["asset_class"]:
+      - "cedear" (default): umbrales de acciones + CCL individual.
+      - "crypto":           umbrales más exigentes, sin CCL (cotiza 24/7 en USD).
     """
-    ratio: int = meta["ratio"]
+    asset_class: str = meta.get("asset_class", "cedear")
+    is_crypto: bool = asset_class == "crypto"
+    ratio: Optional[int] = meta.get("ratio")  # las cripto no tienen ratio
     name: str = meta["name"]
+
+    # ─ Umbrales según clase de activo ────────────────────────────────────────
+    th_rsi_oversold = CRYPTO_RSI_OVERSOLD if is_crypto else RSI_OVERSOLD
+    th_rsi_extreme  = CRYPTO_RSI_EXTREME  if is_crypto else RSI_EXTREME
+    th_daily_drop   = CRYPTO_MIN_DAILY_DROP_PCT if is_crypto else MIN_DAILY_DROP_PCT
+    th_vol_mult     = CRYPTO_VOLUME_SPIKE_MULTIPLIER if is_crypto else VOLUME_SPIKE_MULTIPLIER
+    th_min_score    = CRYPTO_ALERT_MIN_SCORE if is_crypto else ALERT_MIN_SCORE
 
     # ─ Descarga de datos ─────────────────────────────────────────────────────
     df_15m = download_ohlcv(ticker, interval="15m", period="5d")
@@ -243,7 +263,7 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
     bb = calculate_bollinger(close)
     rsi = calculate_rsi(close)
     ema = calculate_ema(close)
-    vol_spike = detect_volume_spike(volume)
+    vol_spike = detect_volume_spike(volume, multiplier=th_vol_mult)
 
     last_close = float(close.iloc[-1])
     last_rsi   = float(rsi.iloc[-1])
@@ -253,8 +273,8 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
     last_vol_spike = bool(vol_spike.iloc[-1])
 
     # ─ Indicadores binarios ───────────────────────────────────────────────────
-    rsi_oversold        = last_rsi < RSI_OVERSOLD          # RSI < 30
-    rsi_extremo         = last_rsi < RSI_EXTREME           # RSI < 25
+    rsi_oversold        = last_rsi < th_rsi_oversold       # RSI < 30
+    rsi_extremo         = last_rsi < th_rsi_extreme        # RSI < 25 (cripto: 22)
     precio_bajo_bb      = last_close < last_bb_lower
     precio_bajo_ema     = last_close < last_ema
     huella_institucional = last_vol_spike and rsi_oversold
@@ -263,17 +283,18 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
     usd_price   = get_current_price_usd(ticker) or last_close
     daily_change = get_daily_change_pct(ticker)  # ej: -2.5 = bajó 2.5% hoy
 
-    # ─ FILTROS DUROS: los 3 deben cumplirse para que la acción califique ──────
+    # ─ FILTROS DUROS: los 3 deben cumplirse para que el activo califique ──────
     # 1. RSI realmente oversold (< 30)
     # 2. Precio perforó la Banda Inferior de Bollinger
-    # 3. La acción cayó al menos MIN_DAILY_DROP_PCT% hoy
-    daily_ok = (daily_change is not None and daily_change <= MIN_DAILY_DROP_PCT)
+    # 3. Cayó al menos th_daily_drop% hoy (CEDEARs: 1% | cripto: 4%)
+    daily_ok = (daily_change is not None and daily_change <= th_daily_drop)
     filtros_duros = rsi_oversold and precio_bajo_bb and daily_ok
 
     if not filtros_duros:
         # No califica — retornamos sin alerta para no desperdiciar tiempo en CCL/noticias
         return {
             "ticker": ticker, "name": name, "timeframe": tf_label,
+            "asset_class": asset_class,
             "timestamp": datetime.now(ARGENTINA_TZ).isoformat(),
             "precio_usd": round(usd_price, 4), "precio_ars": None, "fuente_ars": "—",
             "rsi": round(last_rsi, 1), "ema_20": round(last_ema, 4),
@@ -284,28 +305,46 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
             "ratio": ratio, "opportunity_score": 0, "alerta_activa": False,
         }
 
-    # ─ CCL (solo si pasa filtros duros) ──────────────────────────────────────
-    ccl_ref = get_ccl_reference()
-    cedear_ars, fuente_ars = get_cedear_price_ars(ticker, usd_price, ratio, ccl_ref)
-    ccl_data = {}
-    if cedear_ars and ccl_ref:
-        ccl_data = calculate_ccl_discount(cedear_ars, ratio, usd_price, ccl_ref)
+    # ─ CCL (solo CEDEARs, y solo si pasa filtros duros) ──────────────────────
+    # Las cripto cotizan directamente en USD: no hay ratio ni precio ARS que
+    # comparar contra el CCL de mercado, así que este bloque se omite.
+    ccl_data: dict = {}
+    cedear_ars: Optional[float] = None
+    fuente_ars = "—"
+    if not is_crypto:
+        ccl_ref = get_ccl_reference()
+        cedear_ars, fuente_ars = get_cedear_price_ars(ticker, usd_price, ratio, ccl_ref)
+        if cedear_ars and ccl_ref:
+            ccl_data = calculate_ccl_discount(cedear_ars, ratio, usd_price, ccl_ref)
 
     # ─ Score de calidad (sobre la base de los filtros duros ya aprobados) ─────
     score = 0
-    if rsi_extremo:                              score += 4   # RSI < 25
+    if rsi_extremo:                              score += 4   # RSI < 25 (cripto: 22)
     elif rsi_oversold:                           score += 3   # RSI 25-30
     if huella_institucional:                     score += 3   # vol spike + RSI bajo
-    if daily_change is not None:
-        if daily_change <= -2.0:                 score += 2   # caída fuerte hoy
-        elif daily_change <= -1.0:               score += 1   # caída moderada hoy
     if precio_bajo_ema:                          score += 1
-    if ccl_data.get("cotiza_con_descuento"):     score += 1
+
+    capitulacion = False
+    if is_crypto:
+        # Tramos de caída propios: en cripto un -2% es ruido intradiario.
+        if daily_change is not None:
+            if daily_change <= -8.0:             score += 2   # derrumbe
+            elif daily_change <= -4.0:           score += 1   # caída fuerte
+        capitulacion = (
+            daily_change is not None and daily_change <= CRYPTO_CAPITULATION_DROP_PCT
+        )
+        if capitulacion:                         score += 1   # reemplaza el punto de CCL
+    else:
+        if daily_change is not None:
+            if daily_change <= -2.0:             score += 2   # caída fuerte hoy
+            elif daily_change <= -1.0:           score += 1   # caída moderada hoy
+        if ccl_data.get("cotiza_con_descuento"): score += 1
 
     resultado = {
         "ticker": ticker,
         "name": name,
         "timeframe": tf_label,
+        "asset_class": asset_class,
         "timestamp": datetime.now(ARGENTINA_TZ).isoformat(),
         # ── Precios ───────────────────────────────────────────────────────────
         "precio_usd": round(usd_price, 4),
@@ -324,12 +363,13 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
         "precio_bajo_bb": precio_bajo_bb,
         "precio_bajo_ema": precio_bajo_ema,
         "huella_institucional": huella_institucional,
-        # ── CCL ───────────────────────────────────────────────────────────────
+        "capitulacion": capitulacion,
+        # ── CCL (vacío en cripto) ─────────────────────────────────────────────
         **ccl_data,
         "ratio": ratio,
         # ── Score ─────────────────────────────────────────────────────────────
         "opportunity_score": score,
-        "alerta_activa": score >= ALERT_MIN_SCORE,
+        "alerta_activa": score >= th_min_score,
     }
 
     return resultado
@@ -337,14 +377,24 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
 
 # ── Escaneo Completo del Mercado ──────────────────────────────────────────────
 
-def scan_market(watchlist: dict | None = None, delay_between: float = 1.5) -> list[dict]:
+def scan_market(
+    watchlist: dict | None = None,
+    delay_between: float = 1.5,
+    max_alerts: int | None = None,
+) -> list[dict]:
     """
     Escanea todos los tickers del watchlist.
     delay_between: segundos de espera entre llamadas a yfinance (evita rate-limit).
+    max_alerts:    cupo de alertas a devolver. Si es None, se deduce de la clase
+                   de activo del watchlist (CEDEARs: 2 | cripto: 1).
     Retorna lista de resultados con alerta_activa=True, ordenada por score desc.
     """
     if watchlist is None:
         watchlist = WATCHLIST
+
+    if max_alerts is None:
+        es_cripto = any(m.get("asset_class") == "crypto" for m in watchlist.values())
+        max_alerts = CRYPTO_ALERT_MAX_PER_CYCLE if es_cripto else ALERT_MAX_PER_CYCLE
 
     alertas = []
     total = len(watchlist)
@@ -368,4 +418,4 @@ def scan_market(watchlist: dict | None = None, delay_between: float = 1.5) -> li
             time.sleep(delay_between)
 
     alertas.sort(key=lambda x: x["opportunity_score"], reverse=True)
-    return alertas[:ALERT_MAX_PER_CYCLE]
+    return alertas[:max_alerts]

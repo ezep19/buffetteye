@@ -92,9 +92,9 @@ def _google_news_es(query: str) -> list[str]:
 
 # ── Fuente 2: Ambito Financiero RSS ──────────────────────────────────────────
 
-def _ambito_rss(company_name: str) -> list[str]:
+def _ambito_rss(company_name: str, asset_class: str = "cedear") -> list[str]:
     """
-    RSS de Ambito Financiero (mercados). Filtra por nombre de empresa.
+    RSS de Ambito Financiero (mercados). Filtra por nombre de empresa/activo.
     """
     headlines = []
     urls = [
@@ -102,6 +102,12 @@ def _ambito_rss(company_name: str) -> list[str]:
         "https://www.ambito.com/rss/pages/mercados.xml",
     ]
     keywords = [w.lower() for w in company_name.split() if len(w) > 3]
+    # Términos genéricos que hacen pasar una nota como "contexto de mercado"
+    generic = (
+        ["bitcoin", "cripto", "criptomoneda", "blockchain", "ethereum"]
+        if asset_class == "crypto" else
+        ["wall street", "nasdaq", "s&p", "bolsa", "acciones", "mercado"]
+    )
 
     for url in urls:
         try:
@@ -114,10 +120,10 @@ def _ambito_rss(company_name: str) -> list[str]:
                 pub_ts = _ts_from_struct(entry)
                 if not _is_recent(pub_ts):
                     continue
-                # Filtrar por empresa o mercados globales
+                # Filtrar por activo o contexto de mercado
                 title_lower = title.lower()
                 if any(kw in title_lower for kw in keywords) or \
-                   any(w in title_lower for w in ["wall street", "nasdaq", "s&p", "bolsa", "acciones", "mercado"]):
+                   any(w in title_lower for w in generic):
                     headlines.append(_fmt_headline(title, "Ámbito Financiero", pub_ts))
                 if len(headlines) >= _MAX_HEADLINES:
                     break
@@ -180,11 +186,18 @@ def _yahoo_en_rss(ticker: str) -> list[str]:
 
 # ── Función Principal ─────────────────────────────────────────────────────────
 
-def get_news_context(ticker: str, company_name: str) -> dict:
+def get_news_context(ticker: str, company_name: str, asset_class: str = "cedear") -> dict:
     """
     Obtiene titulares recientes en español para `ticker`.
     Prioridad: Google News AR → Ambito → Yahoo ES → Yahoo EN (fallback).
+
+    asset_class: 'cedear' o 'crypto'. Cambia los términos de búsqueda — buscar
+    "Bitcoin acciones bolsa" no devuelve nada útil.
     """
+    is_crypto = asset_class == "crypto"
+    # yfinance usa 'BTC-USD'; para buscar noticias sirve el símbolo pelado.
+    simbolo = ticker.replace("-USD", "") if is_crypto else ticker
+
     all_headlines: list[str] = []
     sources_used: list[str] = []
 
@@ -198,16 +211,20 @@ def get_news_context(ticker: str, company_name: str) -> dict:
             sources_used.append(source_label)
 
     # 1. Google News en español
-    query_es = f"{company_name} acciones bolsa"
+    query_es = (
+        f"{company_name} criptomoneda precio" if is_crypto
+        else f"{company_name} acciones bolsa"
+    )
     _add(_google_news_es(query_es), "Google News AR")
 
-    # 2. Google News con ticker
+    # 2. Google News con símbolo
     if len(all_headlines) < 2:
-        _add(_google_news_es(f"{ticker} acciones"), "Google News")
+        query_sym = f"{simbolo} cripto" if is_crypto else f"{ticker} acciones"
+        _add(_google_news_es(query_sym), "Google News")
 
     # 3. Ambito Financiero
     if len(all_headlines) < 2:
-        _add(_ambito_rss(company_name), "Ámbito Financiero")
+        _add(_ambito_rss(company_name, asset_class), "Ámbito Financiero")
 
     # 4. Yahoo Finance España
     if len(all_headlines) < 2:
