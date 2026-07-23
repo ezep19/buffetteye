@@ -149,6 +149,13 @@ def build_message(signal: dict, news: dict) -> str:
         flags.append(f"🔔 <b>Huella institucional</b> → {detalle}")
     if signal.get("precio_bajo_ema"):
         flags.append("📈 Precio por debajo de la EMA 20 → Tendencia de corto plazo extendida a la baja, candidata a recuperación.")
+    if is_crypto and signal.get("regime") == "alcista":
+        dist = signal.get("dist_sma_pct")
+        dist_txt = f" (<b>{dist:+.1f}%</b> sobre su media de 200 días)" if dist is not None else ""
+        flags.append(
+            f"🛡️ Tendencia de fondo ALCISTA{dist_txt} → La caída ocurre dentro de un "
+            f"mercado alcista, no de un derrumbe. Es el filtro que evita comprar en plena tendencia bajista."
+        )
     if signal.get("cotiza_con_descuento"):
         flags.append(f"💱 CCL con <b>{signal.get('discount_pct', 0):+.1f}%</b> de descuento → El CEDEAR cotiza más barato que su valor implícito en dólares.")
     flags_text = "\n".join(f"  ✅ {f}" for f in flags) if flags else "  <i>Sin señales adicionales</i>"

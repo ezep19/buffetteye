@@ -65,12 +65,30 @@ CRYPTO_RSI_OVERSOLD = 30    # mismo umbral duro de sobreventa
 CRYPTO_RSI_EXTREME  = 22    # cripto llega más abajo que las acciones
 CRYPTO_VOLUME_SPIKE_MULTIPLIER = 2.20   # el volumen cripto es más ruidoso
 
-# ── Filtros duros cripto (los 3 deben cumplirse) ──────────────────────────────
+# ── Filtros duros cripto (los 4 deben cumplirse) ──────────────────────────────
 # 1. RSI < CRYPTO_RSI_OVERSOLD (30)
 # 2. Precio por debajo de la Banda Inferior de Bollinger
 # 3. Caída en el día >= CRYPTO_MIN_DAILY_DROP_PCT
+# 4. Régimen de mercado alcista (ver filtro de tendencia más abajo)
 CRYPTO_MIN_DAILY_DROP_PCT    = -4.0    # debe haber caído al menos 4% hoy
 CRYPTO_CAPITULATION_DROP_PCT = -12.0   # caída de pánico → punto extra
+
+# ── Filtro de tendencia / régimen de mercado ─────────────────────────────────
+# Comprar sobreventa funciona en activos con valor intrínseco (una empresa vale
+# por sus ganancias, así que si cae demasiado es razonable esperar rebote). En
+# cripto no hay balances que pongan un piso: un activo sobrevendido en tendencia
+# bajista simplemente sigue cayendo — el RSI puede quedarse debajo de 30 durante
+# semanas mientras el precio se parte al medio.
+#
+# La media móvil de 200 días separa los dos casos:
+#   precio > SMA200 → caída DENTRO de un mercado alcista  → comprar la baja tiene sentido
+#   precio < SMA200 → caída DENTRO de un mercado bajista  → es agarrar un cuchillo cayendo
+#
+# Si no hay histórico suficiente para calcular la SMA200 el régimen queda como
+# "desconocido" y NO se alerta: ante la duda, callarse. Cuesta una oportunidad
+# perdida; alertar de más en un bear market cuesta plata.
+CRYPTO_REGIME_FILTER     = os.getenv("CRYPTO_REGIME_FILTER", "true").lower() == "true"
+CRYPTO_REGIME_SMA_PERIOD = 200   # días
 
 # ── Puntaje cripto (máximo 10, igual que CEDEARs) ─────────────────────────────
 # RSI < 22:               +4 pts

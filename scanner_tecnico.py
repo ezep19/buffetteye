@@ -26,6 +26,8 @@ from config import (
     CRYPTO_ALERT_MIN_SCORE,
     CRYPTO_CAPITULATION_DROP_PCT,
     CRYPTO_MIN_DAILY_DROP_PCT,
+    CRYPTO_REGIME_FILTER,
+    CRYPTO_REGIME_SMA_PERIOD,
     CRYPTO_RSI_EXTREME,
     CRYPTO_RSI_OVERSOLD,
     CRYPTO_VOLUME_SPIKE_MULTIPLIER,
@@ -115,6 +117,68 @@ def get_current_price_usd(ticker: str) -> Optional[float]:
         return float(info.last_price)
     except Exception:
         return None
+
+
+# ── Régimen de Mercado (tendencia de fondo) ──────────────────────────────────
+
+# Caché de velas diarias: solo cambian una vez por día, no tiene sentido volver
+# a bajarlas en cada ciclo de 15 minutos. Clave: ticker → (día, DataFrame).
+_daily_cache: dict[str, tuple[str, Optional[pd.DataFrame]]] = {}
+
+
+def get_daily_history(ticker: str, period: str = "2y") -> Optional[pd.DataFrame]:
+    """Velas diarias de cierre, cacheadas por día. None si no se pudieron bajar."""
+    hoy = datetime.now(ARGENTINA_TZ).strftime("%Y-%m-%d")
+    cached = _daily_cache.get(ticker)
+    if cached and cached[0] == hoy:
+        return cached[1]
+
+    df: Optional[pd.DataFrame] = None
+    try:
+        raw = yf.download(
+            ticker, period=period, interval="1d", progress=False, auto_adjust=True
+        )
+        if not raw.empty:
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.get_level_values(0)
+            df = raw[["Close"]].dropna()
+    except Exception as exc:
+        logger.warning(f"{ticker}: error bajando históricos diarios — {exc}")
+
+    _daily_cache[ticker] = (hoy, df)
+    return df
+
+
+def get_market_regime(ticker: str, period: int = CRYPTO_REGIME_SMA_PERIOD) -> dict:
+    """
+    Determina la tendencia de fondo comparando el precio contra su media móvil
+    simple de `period` días.
+
+    Es el filtro que evita "agarrar un cuchillo cayendo": una cripto sobrevendida
+    por debajo de su SMA200 está en tendencia bajista y lo más probable es que
+    siga bajando. Por encima de la SMA200, la misma caída es un retroceso dentro
+    de un mercado alcista.
+
+    Returns: {"regime": "alcista"|"bajista"|"desconocido", "sma_200", "dist_sma_pct"}
+    """
+    df = get_daily_history(ticker)
+    if df is None or len(df) < period:
+        n = 0 if df is None else len(df)
+        logger.warning(
+            f"{ticker}: histórico insuficiente para SMA{period} ({n} velas) — "
+            f"régimen desconocido"
+        )
+        return {"regime": "desconocido", "sma_200": None, "dist_sma_pct": None}
+
+    close = df["Close"].squeeze()
+    sma  = float(close.rolling(window=period).mean().iloc[-1])
+    last = float(close.iloc[-1])
+
+    return {
+        "regime": "alcista" if last > sma else "bajista",
+        "sma_200": round(sma, 4),
+        "dist_sma_pct": round((last - sma) / sma * 100, 2),
+    }
 
 
 # ── Variación Diaria ─────────────────────────────────────────────────────────
@@ -290,20 +354,40 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
     daily_ok = (daily_change is not None and daily_change <= th_daily_drop)
     filtros_duros = rsi_oversold and precio_bajo_bb and daily_ok
 
+    # Campos comunes a cualquier resultado, califique o no
+    base = {
+        "ticker": ticker, "name": name, "timeframe": tf_label,
+        "asset_class": asset_class,
+        "timestamp": datetime.now(ARGENTINA_TZ).isoformat(),
+        "precio_usd": round(usd_price, 4), "precio_ars": None, "fuente_ars": "—",
+        "rsi": round(last_rsi, 1), "ema_20": round(last_ema, 4),
+        "bb_lower": round(last_bb_lower, 4), "bb_pct_b": round(last_bb_pct_b, 3),
+        "volumen_spike": last_vol_spike, "daily_change_pct": daily_change,
+        "rsi_oversold": rsi_oversold, "rsi_extremo": rsi_extremo,
+        "precio_bajo_bb": precio_bajo_bb, "precio_bajo_ema": precio_bajo_ema,
+        "huella_institucional": huella_institucional,
+        "ratio": ratio,
+    }
+
     if not filtros_duros:
-        # No califica — retornamos sin alerta para no desperdiciar tiempo en CCL/noticias
-        return {
-            "ticker": ticker, "name": name, "timeframe": tf_label,
-            "asset_class": asset_class,
-            "timestamp": datetime.now(ARGENTINA_TZ).isoformat(),
-            "precio_usd": round(usd_price, 4), "precio_ars": None, "fuente_ars": "—",
-            "rsi": round(last_rsi, 1), "ema_20": round(last_ema, 4),
-            "bb_lower": round(last_bb_lower, 4), "bb_pct_b": round(last_bb_pct_b, 3),
-            "volumen_spike": last_vol_spike, "daily_change_pct": daily_change,
-            "rsi_oversold": rsi_oversold, "precio_bajo_bb": precio_bajo_bb,
-            "precio_bajo_ema": precio_bajo_ema, "huella_institucional": huella_institucional,
-            "ratio": ratio, "opportunity_score": 0, "alerta_activa": False,
-        }
+        # No califica — cortamos acá para no gastar llamadas en régimen/CCL/noticias
+        return {**base, "opportunity_score": 0, "alerta_activa": False}
+
+    # ─ FILTRO DE TENDENCIA / RÉGIMEN (4º filtro duro, solo cripto) ───────────
+    # Se evalúa DESPUÉS de los filtros duros a propósito: baja una serie diaria
+    # extra y solo vale la pena para las monedas que ya se ven sobrevendidas.
+    #
+    # Una cripto sobrevendida por debajo de su SMA200 está en tendencia bajista:
+    # lo más probable es que siga cayendo. Ahí el bot se calla.
+    if is_crypto and CRYPTO_REGIME_FILTER:
+        regime_data = get_market_regime(ticker)
+        base.update(regime_data)
+        if regime_data["regime"] != "alcista":
+            logger.info(
+                f"  ⛔ {ticker}: sobrevendida pero en régimen "
+                f"{regime_data['regime']} — no se alerta (cuchillo cayendo)"
+            )
+            return {**base, "opportunity_score": 0, "alerta_activa": False}
 
     # ─ CCL (solo CEDEARs, y solo si pasa filtros duros) ──────────────────────
     # Las cripto cotizan directamente en USD: no hay ratio ni precio ARS que
@@ -341,32 +425,13 @@ def analyze_ticker(ticker: str, meta: dict) -> Optional[dict]:
         if ccl_data.get("cotiza_con_descuento"): score += 1
 
     resultado = {
-        "ticker": ticker,
-        "name": name,
-        "timeframe": tf_label,
-        "asset_class": asset_class,
-        "timestamp": datetime.now(ARGENTINA_TZ).isoformat(),
-        # ── Precios ───────────────────────────────────────────────────────────
-        "precio_usd": round(usd_price, 4),
+        **base,
+        # ── Precio ARS (solo CEDEARs) ─────────────────────────────────────────
         "precio_ars": round(cedear_ars, 2) if cedear_ars else None,
         "fuente_ars": fuente_ars,
-        "daily_change_pct": daily_change,
-        # ── Indicadores ───────────────────────────────────────────────────────
-        "rsi": round(last_rsi, 1),
-        "ema_20": round(last_ema, 4),
-        "bb_lower": round(last_bb_lower, 4),
-        "bb_pct_b": round(last_bb_pct_b, 3),
-        "volumen_spike": last_vol_spike,
-        # ── Señales binarias ──────────────────────────────────────────────────
-        "rsi_oversold": rsi_oversold,
-        "rsi_extremo": rsi_extremo,
-        "precio_bajo_bb": precio_bajo_bb,
-        "precio_bajo_ema": precio_bajo_ema,
-        "huella_institucional": huella_institucional,
         "capitulacion": capitulacion,
         # ── CCL (vacío en cripto) ─────────────────────────────────────────────
         **ccl_data,
-        "ratio": ratio,
         # ── Score ─────────────────────────────────────────────────────────────
         "opportunity_score": score,
         "alerta_activa": score >= th_min_score,
