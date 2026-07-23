@@ -1,10 +1,16 @@
 name: BuffettEye Scanner
 
 on:
-  # Cada 15 minutos en horario de rueda BYMA (14:00–20:00 UTC = 11:00–17:00 ARS)
-  # Lunes a Viernes solamente
   schedule:
+    # ── Rueda BYMA: CEDEARs + cripto, cada 15 minutos ───────────────────────
+    # 14:00–20:00 UTC = 11:00–17:00 ARS, lunes a viernes.
     - cron: '0,15,30,45 14-19 * * 1-5'
+
+    # ── Fuera de rueda: solo cripto (cotiza 24/7), cada 2 horas ─────────────
+    # Cadencia baja a propósito: el repo es privado y los minutos de Actions
+    # son limitados. Estos crons NO se solapan con el de arriba.
+    - cron: '0 0,2,4,6,8,10,12,20,22 * * 1-5'   # días hábiles, fuera de BYMA
+    - cron: '0 */2 * * 0,6'                      # sábados y domingos, todo el día
 
   # Permite disparar manualmente desde la pestaña Actions de GitHub
   workflow_dispatch:
@@ -34,3 +40,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCAN_INTERVAL_MINUTES: 15
           CCL_DISCOUNT_THRESHOLD: 2.0
+          CRYPTO_ENABLED: 'true'
