@@ -6,6 +6,7 @@ Envía mensajes con formato Markdown usando requests (sin dependencia de python-
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -16,6 +17,27 @@ from config import ALL_ASSETS, ARGENTINA_TZ, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 logger = logging.getLogger("buffetteye.alerts")
 
 _TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
+
+# Patrón de token embebido en una URL de Telegram: /bot<id>:<secreto>/
+_TOKEN_EN_URL = re.compile(r"/bot[0-9]{6,}:[A-Za-z0-9_-]+")
+
+
+def _redact(text) -> str:
+    """
+    Quita el token de cualquier texto antes de loguearlo.
+
+    Las excepciones de `requests` incluyen la URL completa, y la URL de Telegram
+    lleva el token embebido (/bot<TOKEN>/sendMessage). Este repo es público: sus
+    logs de GitHub Actions los puede leer cualquiera, así que el token no puede
+    terminar ahí. GitHub además enmascara los secrets por su cuenta, pero eso es
+    una red de seguridad que solo funciona con coincidencias exactas — no
+    conviene depender de ella.
+    """
+    out = str(text)
+    if TELEGRAM_TOKEN:
+        out = out.replace(TELEGRAM_TOKEN, "<TOKEN_OCULTO>")
+    return _TOKEN_EN_URL.sub("/bot<TOKEN_OCULTO>", out)
+
 
 # ── Íconos de contexto ────────────────────────────────────────────────────────
 _SECTOR_EMOJI = {
@@ -219,10 +241,10 @@ def send_alert(signal: dict, news: dict) -> bool:
             logger.info(f"Alerta enviada: {signal['ticker']} (score={signal['opportunity_score']})")
             return True
         else:
-            logger.error(f"Telegram error {resp.status_code}: {resp.text[:200]}")
+            logger.error(f"Telegram error {resp.status_code}: {_redact(resp.text[:200])}")
             return False
     except requests.RequestException as exc:
-        logger.error(f"Error enviando alerta para {signal['ticker']}: {exc}")
+        logger.error(f"Error enviando alerta para {signal['ticker']}: {_redact(exc)}")
         return False
 
 
@@ -244,9 +266,9 @@ def send_heartbeat(scan_count: int, alerts_sent: int) -> None:
     try:
         r = requests.post(url, json=payload, timeout=8)
         if not r.ok:
-            logger.warning(f"Heartbeat error: {r.text[:100]}")
+            logger.warning(f"Heartbeat error: {_redact(r.text[:100])}")
     except Exception as exc:
-        logger.warning(f"Heartbeat no enviado: {exc}")
+        logger.warning(f"Heartbeat no enviado: {_redact(exc)}")
 
 
 def send_startup_message() -> None:
@@ -271,9 +293,9 @@ def send_startup_message() -> None:
     try:
         r = requests.post(url, json=payload, timeout=8)
         if not r.ok:
-            logger.error(f"send_startup error: {r.text[:100]}")
+            logger.error(f"send_startup error: {_redact(r.text[:100])}")
     except Exception as exc:
-        logger.error(f"send_startup no enviado: {exc}")
+        logger.error(f"send_startup no enviado: {_redact(exc)}")
 
 
 # ── Utilidades internas ───────────────────────────────────────────────────────
